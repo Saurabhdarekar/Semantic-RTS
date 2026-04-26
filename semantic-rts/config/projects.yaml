@@ -1,0 +1,28 @@
+# Defects4J projects and bug ranges to evaluate.
+# Start with Chart (small, ~700 tests) then expand.
+
+projects:
+  - name: Chart
+    bugs: [1, 26]        # inclusive range; Chart has bugs 1–26
+    priority: 1
+
+  - name: Lang
+    bugs: [1, 65]        # Lang has bugs 1–65
+    priority: 2
+
+  - name: Math
+    bugs: [1, 106]
+    priority: 3
+
+  - name: Time
+    bugs: [1, 27]
+    priority: 4
+
+  - name: Closure
+    bugs: [1, 176]
+    priority: 5
+
+# Smoke-test subset: 5 bugs from Chart for quick sanity checks
+smoke_test:
+  - name: Chart
+    bugs: [1, 5]

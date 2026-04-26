@@ -1,0 +1,12 @@
+# Ablation: ignore tiers — treat every test as Tier 3.
+# Removes both Safety Bridge and Precision Filter tier-based logic.
+selector:
+  safety_bridge:
+    always_include_tier_1: false
+    tier_2_threshold: 1.0
+  precision_filter:
+    tier_5_min: 0.0
+    tier_4_min: 0.0
+
+_ablation:
+  tiers_enabled: false

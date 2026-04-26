@@ -1,0 +1,25 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+.uv/
+
+# Gitignore data dirs except cache (cache is committed for reproducibility)
+data/kb/
+data/eval/
+data/logs/
+
+# Keep cache structure but not content by default
+# Uncomment the next line to also ignore cache (not recommended for the final eval set)
+# data/cache/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db

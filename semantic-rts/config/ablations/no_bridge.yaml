@@ -1,0 +1,6 @@
+# Ablation: Safety Bridge disabled.
+# Compare recall delta vs default to quantify how much the bridge helps.
+selector:
+  safety_bridge:
+    always_include_tier_1: false
+    tier_2_threshold: 1.0   # effectively disabled (no score reaches 1.0)

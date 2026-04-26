@@ -1,0 +1,43 @@
+llm:
+  provider: gemini
+  chat_model: gemini-2.5-flash-lite-preview-06-17
+  embedding_model: text-embedding-005
+  max_retries: 3
+  rate_limit_rpm: 14        # stay under 15 RPM free-tier limit
+  rate_limit_rpd: 1400      # stay under 1500 RPD
+
+vector_store:
+  type: faiss
+  index_kind: IndexFlatIP   # cosine sim via normalized vectors
+  embedding_dim: 768        # text-embedding-005 default
+
+kb:
+  summary_max_tokens: 200
+  source_max_tokens: 1500
+  tier_keywords:
+    tier_1: [security, auth, password, crypto, privacy, payment, authentication, authorization]
+    tier_2: [persistence, database, transaction, concurrency, jdbc, hibernate, sql]
+    tier_3: [api, controller, service, endpoint, handler]
+    tier_4: [util, helper, format, parse, convert]
+    tier_5: [getter, setter, tostring, equals, hashcode, constructor]
+
+retrieval:
+  top_k: 30
+  similarity_threshold: 0.55
+
+selector:
+  safety_bridge:
+    always_include_tier_1: true
+    tier_2_threshold: 0.40
+  precision_filter:
+    tier_5_min: 0.65
+    tier_4_min: 0.50
+  max_selected: 100
+
+paths:
+  defects4j_home: ${DEFECTS4J_HOME}
+  kb_dir: data/kb
+  eval_dir: data/eval
+  cache_dir: data/cache
+  logs_dir: data/logs
+  work_dir: work/checkouts

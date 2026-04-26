@@ -1,0 +1,10 @@
+diff --git a/src/main/java/miniproject/Auth.java b/src/main/java/miniproject/Auth.java
+index abc1234..def5678 100644
+--- a/src/main/java/miniproject/Auth.java
++++ b/src/main/java/miniproject/Auth.java
+@@ -5,3 +5,4 @@ public class Auth {
+     public static boolean validatePassword(String password) {
+-        return password.length() >= 8;
++        // Strengthen: require at least 12 characters
++        return password.length() >= 12;
+     }

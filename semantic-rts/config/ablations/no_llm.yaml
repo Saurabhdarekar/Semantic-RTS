@@ -1,0 +1,4 @@
+# Ablation: skip LLM intent agent in Phase 2.
+# The diff is embedded directly (raw text) instead of via an LLM-generated summary.
+impact:
+  skip_intent_agent: true

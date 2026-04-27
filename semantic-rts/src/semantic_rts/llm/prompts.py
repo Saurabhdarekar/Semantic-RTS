@@ -29,6 +29,30 @@ Output JSON only:
   "concepts": ["<3-7 short keywords or feature names>"]
 }}"""
 
+# V2: merged summarize + tier + SUT context + richer output schema
+SUMMARIZER_V2 = "SUMMARIZER_V2"
+
+SUMMARIZER_V2_TEMPLATE = """\
+You are analyzing a unit test to produce a rich semantic description for a test selection system.
+Your output will be embedded in a vector database to match code changes to relevant tests — be precise and specific.
+
+Test class: {class_fqn}
+Test method: {method_name}
+{sut_context}
+Test source:
+```java
+{source}
+```
+
+Output JSON only:
+{{
+  "summary": "<one sentence: what specific production behavior does this test verify>",
+  "condition": "<the exact scenario or condition under test, e.g. 'null input', 'empty list', 'concurrent modification', 'boundary value'>",
+  "tested_methods": ["<ClassName.methodName for each production method this test directly exercises>"],
+  "concepts": ["<3-7 domain keywords relevant to this test>"],
+  "tier": <integer 1-5: 1=security/auth/payment/crypto, 2=persistence/transactions/concurrency, 3=business-logic/services/API, 4=utilities/formatting/parsing, 5=trivial getters/setters/toString>
+}}"""
+
 # ---------------------------------------------------------------------------
 # Phase 1 — Tier Classifier
 # ---------------------------------------------------------------------------
@@ -61,7 +85,7 @@ You are analyzing a Git diff to infer the developer's intent for test selection 
 Files changed: {file_list}
 Changed methods: {method_list}
 
-Diff:
+{sig_block}Diff:
 ```diff
 {diff}
 ```

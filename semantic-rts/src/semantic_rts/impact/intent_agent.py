@@ -23,8 +23,13 @@ logger = logging.getLogger(__name__)
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-# Rough chars-per-token estimate for truncation
 _CHARS_PER_TOKEN = 4
+
+_TEST_DIR_MARKERS = ("/test/", "/tests/", "Test.java", "Tests.java", "TestCase.java")
+
+
+def _is_test_file(path: str) -> bool:
+    return any(m in path for m in _TEST_DIR_MARKERS)
 
 
 @dataclass
@@ -84,14 +89,20 @@ def _single_intent_call(
     methods_changed: list[str],
     client: "GeminiClient",
     max_diff_chars: int,
+    method_sigs: list[str] | None = None,
 ) -> IntentResult | None:
     diff_snippet = diff_text[:max_diff_chars]
     if len(diff_text) > max_diff_chars:
         diff_snippet += "\n... [diff truncated]"
 
+    sig_block = ""
+    if method_sigs:
+        sig_block = "Changed method signatures:\n" + "\n".join(f"  - {s}" for s in method_sigs) + "\n\n"
+
     prompt = INTENT_V1_TEMPLATE.format(
         file_list=", ".join(files_changed) or "(none)",
         method_list=", ".join(methods_changed) or "(none)",
+        sig_block=sig_block,
         diff=diff_snippet,
     )
     return _call_intent_llm(prompt, client, INTENT_V1)
@@ -144,18 +155,50 @@ def analyze_intent(
     methods_changed: list[str],
     client: "GeminiClient",
     config: "Config",
+    project_root: "str | None" = None,
 ) -> IntentResult:
     """Infer developer intent from a diff via LLM.
 
-    Chunks large diffs by file and merges partial results.
+    Strips test file changes before sending to the LLM so the intent focuses
+    on production code. Chunks large diffs by file and merges partial results.
     Falls back to a rule-based summary on any LLM failure.
     """
+    import unidiff
+
+    # Strip test file hunks from diff — focus LLM on production code changes
+    prod_files = [f for f in files_changed if not _is_test_file(f)]
+    try:
+        patch = unidiff.PatchSet(diff_text)
+        prod_diff = "".join(str(pf) for pf in patch if not _is_test_file(pf.path))
+        if not prod_diff:
+            prod_diff = diff_text  # fallback: keep original if everything was test files
+    except Exception:
+        prod_diff = diff_text
+        prod_files = files_changed
+
     max_chars = config.impact.diff_max_tokens * _CHARS_PER_TOKEN
 
-    if len(diff_text) <= max_chars:
-        result = _single_intent_call(diff_text, files_changed, methods_changed, client, max_chars)
+    # Extract signatures of changed methods for richer LLM context
+    method_sigs: list[str] = []
+    if project_root:
+        try:
+            from pathlib import Path
+            from semantic_rts.kb.sut_linker import _extract_method_signatures
+            method_names = {m.split(".")[-1] for m in methods_changed if "." in m}
+            for f in prod_files:
+                prod_path = Path(project_root) / f
+                if prod_path.exists():
+                    sigs = _extract_method_signatures(prod_path, method_names, cap=6)
+                    method_sigs.extend(sigs)
+                    if len(method_sigs) >= 12:
+                        break
+        except Exception:
+            pass
+
+    if len(prod_diff) <= max_chars:
+        result = _single_intent_call(prod_diff, prod_files, methods_changed, client, max_chars, method_sigs)
     else:
-        result = _chunked_intent_call(diff_text, files_changed, methods_changed, client, max_chars)
+        result = _chunked_intent_call(prod_diff, prod_files, methods_changed, client, max_chars)
 
     if result is not None:
         return result

@@ -45,15 +45,23 @@ class AnalysisTrace:
 # Query formatting (must mirror Phase 1 embedding format)
 # ---------------------------------------------------------------------------
 
-def format_query(intent: "IntentResult") -> str:
-    """Format intent into the embedding query string.
+def format_query(intent: "IntentResult", methods_changed: list[str] | None = None) -> str:
+    """Format intent into a natural-language query string.
 
-    The format mirrors format_for_embedding() in kb/builder.py so that
-    query and document representations sit in the same embedding space.
+    Mirrors format_for_embedding() in kb/builder.py so query and document
+    vectors sit in the same embedding space. Including changed method simple
+    names lets FAISS directly match KB entries that list those methods under
+    'Methods under test'.
     """
-    concepts = " ".join(intent.concepts)
-    risk = " ".join(intent.risk_areas)
-    return f"intent: {intent.intent_summary} | concepts: {concepts} | risk: {risk}"
+    parts = [intent.intent_summary]
+    if methods_changed:
+        simple = ", ".join(m.split(".")[-1] for m in methods_changed if "." in m) or ", ".join(methods_changed)
+        parts.append(f"Methods changed: {simple}.")
+    if intent.concepts:
+        parts.append(f"Concepts: {', '.join(intent.concepts)}.")
+    if intent.risk_areas:
+        parts.append(f"Risk areas: {', '.join(intent.risk_areas)}.")
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +84,7 @@ def retrieve(
     files_changed = files_changed or []
     methods_changed = methods_changed or []
 
-    query_text = format_query(intent)
+    query_text = format_query(intent, methods_changed)
 
     if kb.size == 0:
         logger.warning("KB is empty — returning no candidates.")

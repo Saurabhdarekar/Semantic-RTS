@@ -37,6 +37,8 @@ class TestMethod:
 
     # Filled in Phase 1 enrichment
     summary: str = ""
+    condition: str = ""           # specific scenario/condition being tested
+    tested_methods: list[str] = field(default_factory=list)  # production methods exercised
     concepts: list[str] = field(default_factory=list)
     tier: int = 3
     tier_source: Literal["rule", "llm", "default"] = "rule"
@@ -80,12 +82,22 @@ def parse_test_methods(files: list[Path], project_root: Path) -> list[TestMethod
 # Internal parsing
 # ---------------------------------------------------------------------------
 
-def _detect_junit_version(tree: javalang.tree.CompilationUnit) -> Literal["4", "5", "unknown"]:
+def _extends_test_case(type_decl: javalang.tree.ClassDeclaration) -> bool:
+    """Return True if the class directly extends TestCase (JUnit 3 style)."""
+    if not type_decl.extends:
+        return False
+    name = getattr(type_decl.extends, "name", None) or str(type_decl.extends)
+    return name in ("TestCase", "junit.framework.TestCase")
+
+
+def _detect_junit_version(tree: javalang.tree.CompilationUnit) -> Literal["4", "5", "3", "unknown"]:
     imports = [imp.path for imp in (tree.imports or [])]
     if any("org.junit.jupiter" in p for p in imports):
         return "5"
     if any("org.junit" in p for p in imports):
         return "4"
+    if any("junit.framework" in p for p in imports):
+        return "3"
     return "unknown"
 
 
@@ -102,6 +114,7 @@ def _parse_file(file_path: Path, project_root: Path) -> list[TestMethod]:
     package = tree.package.name if tree.package else ""
     junit_version = _detect_junit_version(tree)
     valid_test_anns = _JUNIT5_TEST_ANNOTATIONS if junit_version == "5" else _JUNIT4_TEST_ANNOTATIONS
+    is_junit3 = junit_version == "3"
 
     methods: list[TestMethod] = []
 
@@ -116,15 +129,27 @@ def _parse_file(file_path: Path, project_root: Path) -> list[TestMethod]:
         class_name = type_decl.name
         class_fqn = f"{package}.{class_name}" if package else class_name
 
+        # JUnit 3: class must extend TestCase (directly or transitively)
+        extends_test_case = is_junit3 and _extends_test_case(type_decl)
+
         for member in (type_decl.body or []):
             if not isinstance(member, javalang.tree.MethodDeclaration):
                 continue
 
             annotation_names = {ann.name for ann in (member.annotations or [])}
 
-            # Must have at least one test annotation
-            if not (annotation_names & valid_test_anns):
-                continue
+            if extends_test_case:
+                # JUnit 3: public void test*() with no args
+                if not member.name.startswith("test"):
+                    continue
+                if "public" not in (member.modifiers or set()):
+                    continue
+                if member.parameters:
+                    continue
+            else:
+                # Must have at least one test annotation
+                if not (annotation_names & valid_test_anns):
+                    continue
 
             # Skip disabled/ignored
             if annotation_names & _SKIP_ANNOTATIONS:
@@ -147,7 +172,6 @@ def _parse_file(file_path: Path, project_root: Path) -> list[TestMethod]:
             max_chars = 6000   # ~1500 tokens
             truncated = raw_source[:max_chars] + "\n// [truncated]" if len(raw_source) > max_chars else raw_source
 
-            # Prefer the detected version; fall back to "4"
             junit_str: Literal["4", "5"] = "5" if junit_version == "5" else "4"
 
             test_id = f"{class_fqn}::{member.name}"

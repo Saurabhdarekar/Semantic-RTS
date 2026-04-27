@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Optional
 
 import click
+from dotenv import load_dotenv
 
 from semantic_rts import __version__
 from semantic_rts.config import load_config
+
+load_dotenv()  # load GOOGLE_API_KEY and other vars from .env if present
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +87,14 @@ def build(ctx: click.Context, project: str, project_path: str, resume: bool, max
     "--kb", required=True, type=click.Path(exists=True),
     help="Path to the project KB directory (output of `srts build`).",
 )
+@click.option(
+    "--project-path", default=None, type=click.Path(exists=True),
+    help="Path to the checked-out project root (enables method signature extraction for intent).",
+)
 @click.option("--output", default=None, help="Write selected test IDs to this file (stdout if omitted).")
 @click.pass_context
-def select(ctx: click.Context, diff: str, kb: str, output: Optional[str]) -> None:
+def select(ctx: click.Context, diff: str, kb: str, project_path: Optional[str], output: Optional[str]) -> None:
     """Phase 2+3: Retrieve and rank tests for a given diff."""
-    import json
     from pathlib import Path
 
     from semantic_rts.impact.diff_parser import extract_changed_methods, parse_unified_diff
@@ -109,14 +115,14 @@ def select(ctx: click.Context, diff: str, kb: str, output: Optional[str]) -> Non
 
     click.echo("[select] Parsing diff ...")
     parsed = parse_unified_diff(diff_text)
-    methods = extract_changed_methods(parsed)
+    methods = extract_changed_methods(parsed, project_root=project_path)
     click.echo(f"[select] Files changed: {parsed.files_changed}")
     click.echo(f"[select] Methods changed: {methods}")
 
     click.echo("[select] Analyzing intent ...")
     client = GeminiClient(cfg)
     embedder = GeminiEmbedder(cfg)
-    intent = analyze_intent(diff_text, parsed.files_changed, methods, client, cfg)
+    intent = analyze_intent(diff_text, parsed.files_changed, methods, client, cfg, project_root=project_path)
     click.echo(f"[select] Intent: {intent.intent_summary[:120]}")
 
     click.echo("[select] Retrieving candidates ...")

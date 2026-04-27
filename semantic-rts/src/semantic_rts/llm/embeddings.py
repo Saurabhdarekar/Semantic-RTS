@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import time
 from pathlib import Path
 
@@ -70,8 +71,69 @@ class GeminiEmbedder:
         return self._call_with_retry(text, key)
 
     def embed_batch(self, texts: list[str], *, force: bool = False) -> list[list[float]]:
-        """Embed a list of texts, returning one vector per text."""
+        """Embed a list of texts, returning one vector per text (one call per text)."""
         return [self.embed(t, force=force) for t in texts]
+
+    def embed_batch_efficient(
+        self,
+        texts: list[str],
+        batch_size: int = 20,
+        *,
+        force: bool = False,
+    ) -> list[list[float]]:
+        """Embed texts using batched API calls: ceil(n/batch_size) calls instead of n.
+
+        Cache is checked per-text before calling the API, so resumed runs
+        only pay for uncached texts.
+        """
+        results: list[list[float] | None] = [None] * len(texts)
+        keys = [_emb_cache_key(t, self._model_name) for t in texts]
+
+        uncached: list[int] = []
+        if not force:
+            for i, key in enumerate(keys):
+                cached = self._load_cache(key)
+                if cached is not None:
+                    results[i] = cached
+                else:
+                    uncached.append(i)
+        else:
+            uncached = list(range(len(texts)))
+
+        for batch_start in range(0, len(uncached), batch_size):
+            batch_indices = uncached[batch_start : batch_start + batch_size]
+            batch_texts = [texts[i] for i in batch_indices]
+            batch_vecs = self._call_batch_with_retry(batch_texts)
+            for idx, vec in zip(batch_indices, batch_vecs):
+                self._save_cache(keys[idx], vec)
+                results[idx] = vec
+
+        return [r if r is not None else [] for r in results]
+
+    def _call_batch_with_retry(self, texts: list[str]) -> list[list[float]]:
+        last_error: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                self._rpm_bucket.acquire()
+                result = self._client.models.embed_content(
+                    model=self._model_name,
+                    contents=texts,
+                )
+                return [_normalize(list(e.values)) for e in result.embeddings]
+            except Exception as exc:
+                code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                is_rate_limit = code == 429 or "quota" in str(exc).lower()
+                is_transient = is_rate_limit or code in (500, 503, 504)
+                if is_transient and attempt < self._max_retries - 1:
+                    last_error = exc
+                    wait = 60 if is_rate_limit else 2 ** attempt
+                    wait += random.uniform(0, 5)
+                    time.sleep(wait)
+                else:
+                    raise
+        raise RuntimeError(
+            f"Batch embedding failed after {self._max_retries} retries: {last_error}"
+        )
 
     # ------------------------------------------------------------------
     # Internal

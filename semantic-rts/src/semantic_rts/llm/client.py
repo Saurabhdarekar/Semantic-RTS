@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import threading
 import time
 from pathlib import Path
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class _TokenBucket:
     def __init__(self, rate: float, per_seconds: float) -> None:
-        self._tokens = rate
+        self._tokens = 0.0  # start empty to avoid initial burst
         self._rate = rate
         self._per_seconds = per_seconds
         self._last_refill = time.monotonic()
@@ -39,7 +40,8 @@ class _TokenBucket:
                     self._tokens -= n
                     return
                 wait = (n - self._tokens) * (self._per_seconds / self._rate)
-            time.sleep(min(wait, 1.0))
+            # jitter prevents synchronized threads from stampeding together
+            time.sleep(min(wait, 1.0) + random.uniform(0, 0.1))
 
     def _refill(self) -> None:
         now = time.monotonic()
@@ -155,14 +157,16 @@ class GeminiClient:
                 return result
 
             except Exception as exc:
-                # Retry on rate-limit / transient server errors
                 code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-                is_transient = code in (429, 500, 503, 504) or "quota" in str(exc).lower()
+                is_rate_limit = code == 429 or "quota" in str(exc).lower()
+                is_transient = is_rate_limit or code in (500, 503, 504)
                 if is_transient and attempt < self._max_retries - 1:
                     last_error = exc
-                    wait = 2 ** attempt
+                    # 429: wait for per-minute quota reset; 503: back off longer for overloaded preview models
+                    wait = 60 if is_rate_limit else min(30, 5 * (2 ** attempt))
+                    wait += random.uniform(0, 5)  # jitter across threads
                     logger.warning(
-                        "Transient error attempt %d/%d: %s. Waiting %ds.",
+                        "Transient error attempt %d/%d: %s. Waiting %.1fs.",
                         attempt + 1, self._max_retries, exc, wait,
                     )
                     self._log(version_tag, cached=False, latency_ms=0, error=str(exc))

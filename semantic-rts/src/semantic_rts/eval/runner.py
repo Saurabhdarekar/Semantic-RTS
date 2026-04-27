@@ -94,7 +94,8 @@ def run_bug(
     )
 
     # --- Step 3: Analyze intent ---
-    intent = analyze_intent(bug.diff, parsed.files_changed, methods, client, config)
+    intent = analyze_intent(bug.diff, parsed.files_changed, methods, client, config,
+                            project_root=str(bug.fixed_dir))
     logger.info("%s-%d: intent=%s", project, bug_id, intent.intent_summary[:80])
 
     # --- Step 4: Retrieve ---

@@ -63,6 +63,7 @@ def run_bug(
     work_dir: Path,
     d4j_home: Path | None = None,
     method: str = "semantic",
+    tested_methods_map: "dict[str, list[str]] | None" = None,
 ) -> "BugMetrics":
     """Run the full pipeline on one bug and return BugMetrics.
 
@@ -104,6 +105,7 @@ def run_bug(
         diff_hash=parsed.diff_hash,
         files_changed=parsed.files_changed,
         methods_changed=methods,
+        tested_methods_map=tested_methods_map,
     )
     logger.info("%s-%d: %d candidates retrieved", project, bug_id, len(candidates))
 
@@ -114,10 +116,13 @@ def run_bug(
 
     latency_ms = (time.perf_counter() - t0) * 1000
 
+    # Use KB test IDs as the universe (method-level), not defects4j's class-level list
+    kb_all_tests = [t for t, _ in store.all_tests()]
+
     return compute_metrics(
         selected=selected_ids,
         failing=bug.failing_tests,
-        all_tests=bug.all_tests,
+        all_tests=kb_all_tests,
         method=method,
         project=project,
         bug_id=bug_id,
@@ -158,6 +163,21 @@ def run_eval(
     store = VectorStore.load(kb_path)
     logger.info("KB loaded: %d tests", store.size)
 
+    # Build tested_methods_map for hybrid boost: {test_id: [ClassName.method, ...]}
+    tested_methods_map: dict[str, list[str]] = {}
+    jsonl_path = kb_path / "tests.jsonl"
+    if jsonl_path.exists():
+        import json as _json
+        with open(jsonl_path, encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line:
+                    try:
+                        _row = _json.loads(_line)
+                        tested_methods_map[_row["test_id"]] = _row.get("tested_methods", [])
+                    except Exception:
+                        pass
+
     client = GeminiClient(config)
     embedder = GeminiEmbedder(config)
 
@@ -168,6 +188,7 @@ def run_eval(
             m = run_bug(
                 project, bug_id, config, store, client, embedder,
                 work_dir, d4j_home, method=method,
+                tested_methods_map=tested_methods_map,
             )
             results.append(m)
             logger.info(

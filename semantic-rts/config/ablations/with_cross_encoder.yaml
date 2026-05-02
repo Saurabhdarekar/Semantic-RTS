@@ -1,0 +1,6 @@
+# Experiment: enable the optional cross-encoder LLM reranking pass.
+# Runs a binary YES/NO LLM filter over the top-40 candidates before selection.
+# Increases LLM cost; use to measure precision gain vs latency tradeoff.
+selector:
+  cross_encoder_enabled: true
+  cross_encoder_top_n: 40

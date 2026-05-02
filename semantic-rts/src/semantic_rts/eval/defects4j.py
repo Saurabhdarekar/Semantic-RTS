@@ -33,6 +33,10 @@ class Defects4JError(RuntimeError):
     """Raised when a defects4j command fails."""
 
 
+class DeprecatedBugError(Defects4JError):
+    """Raised when the requested bug ID is deprecated in this Defects4J version."""
+
+
 def _run(args: list[str], cwd: Path | None = None, check: bool = True) -> str:
     """Run a shell command and return stdout. Raises Defects4JError on failure."""
     try:
@@ -46,9 +50,12 @@ def _run(args: list[str], cwd: Path | None = None, check: bool = True) -> str:
         raise Defects4JError(f"Command not found: {args[0]}") from exc
 
     if check and result.returncode != 0:
+        stderr = result.stderr[:500]
+        if "deprecated bug" in stderr.lower():
+            raise DeprecatedBugError(f"Deprecated bug: {' '.join(args)}")
         raise Defects4JError(
             f"Command failed (exit {result.returncode}): {' '.join(args)}\n"
-            f"stderr: {result.stderr[:500]}"
+            f"stderr: {stderr}"
         )
     return result.stdout.strip()
 
@@ -81,18 +88,28 @@ def checkout(project: str, bug_id: int, version: str, target: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def get_patch_from_framework(d4j_home: Path, project: str, bug_id: int) -> str | None:
-    """Read the .src.patch stored in the D4J framework directory, if present.
+    """Read and combine .src.patch + .test.patch from the D4J framework directory.
 
     D4J stores pre-generated patches at:
       $D4J_HOME/framework/projects/<project>/patches/<bug_id>.src.patch
+      $D4J_HOME/framework/projects/<project>/patches/<bug_id>.test.patch
+
+    Both are combined so that test files added alongside the fix are visible
+    to the test_in_diff bypass in Phase 2.
     """
-    patch_path = (
-        d4j_home / "framework" / "projects" / project / "patches" / f"{bug_id}.src.patch"
-    )
-    if patch_path.exists():
-        logger.debug("Loading framework patch: %s", patch_path)
-        return patch_path.read_text(encoding="utf-8", errors="replace")
-    logger.debug("Framework patch not found: %s", patch_path)
+    patches_dir = d4j_home / "framework" / "projects" / project / "patches"
+    src_patch = patches_dir / f"{bug_id}.src.patch"
+    test_patch = patches_dir / f"{bug_id}.test.patch"
+
+    parts = []
+    if src_patch.exists():
+        parts.append(src_patch.read_text(encoding="utf-8", errors="replace"))
+    if test_patch.exists():
+        parts.append(test_patch.read_text(encoding="utf-8", errors="replace"))
+
+    if parts:
+        return "\n".join(parts)
+    logger.debug("No framework patches found for %s-%d", project, bug_id)
     return None
 
 

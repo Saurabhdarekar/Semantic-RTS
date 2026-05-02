@@ -16,6 +16,8 @@ from pathlib import Path
 from tqdm import tqdm
 
 from semantic_rts.config import Config
+from semantic_rts.kb.embed_format import format_for_embedding as _canonical_format
+from semantic_rts.kb.sensitivity import compute_sensitivity
 from semantic_rts.kb.test_parser import TestMethod, discover_test_files, parse_test_methods
 from semantic_rts.kb.summarizer import summarize_test
 from semantic_rts.kb.tier_classifier import classify_tier_rule
@@ -27,20 +29,17 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Embedding format (must mirror Phase 2 query format)
+# Embedding format — delegates to shared canonical format
 # ---------------------------------------------------------------------------
 
 def format_for_embedding(tm: TestMethod) -> str:
-    parts = [tm.summary]
-    if tm.condition:
-        parts.append(f"Condition: {tm.condition}.")
-    if tm.tested_methods:
-        method_names = ", ".join(m.split(".")[-1] for m in tm.tested_methods)
-        parts.append(f"Methods under test: {method_names}.")
-    if tm.concepts:
-        parts.append(f"Concepts: {', '.join(tm.concepts)}.")
-    parts.append(f"Test class: {tm.class_simple}.")
-    return " ".join(parts)
+    return _canonical_format(
+        summary=tm.summary,
+        methods=tm.tested_methods,
+        concepts=tm.concepts,
+        condition=tm.condition,
+        class_simple=tm.class_simple,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -80,13 +79,14 @@ def _enrich_llm(
     if max_requests is not None and request_counter[0] >= max_requests:
         raise RuntimeError(f"Reached --max-requests limit ({max_requests}). Stopping.")
 
-    summary, concepts, llm_tier, tested_methods, condition = summarize_test(
+    summary, concepts, llm_tier, tested_methods, condition, topology_scope = summarize_test(
         tm, client, project_path
     )
     tm.summary = summary
     tm.concepts = concepts
     tm.tested_methods = tested_methods
     tm.condition = condition
+    tm.topology_scope = topology_scope
     request_counter[0] += 1
 
     # Rule-based tier takes precedence over LLM tier (safety: rules catch critical tests)
@@ -126,6 +126,9 @@ def build_kb(
     all_methods = parse_test_methods(files, project_path)
     logger.info("Parsed %d test methods.", len(all_methods))
 
+    for tm in all_methods:
+        tm.sensitivity_score = compute_sensitivity(tm.source)
+
     if not all_methods:
         logger.warning("No test methods found in %s. KB will be empty.", project_path)
         return
@@ -145,6 +148,9 @@ def build_kb(
             tm.concepts = ex.get("concepts", [])
             tm.tier = ex.get("tier", 3)
             tm.tier_source = ex.get("tier_source", "rule")
+            tm.topology_scope = ex.get("topology_scope", "unit")
+            tm.sensitivity_score = ex.get("sensitivity_score", 0.5)
+            tm.fixture_classes = ex.get("fixture_classes", [])
             already_done.append(tm)
         else:
             to_process.append(tm)
@@ -229,6 +235,103 @@ def build_kb(
     logger.info(
         "KB for %s saved to %s (%d tests indexed).", project_name, kb_dir, store.size
     )
+
+
+def update_kb_from_test_paths(
+    test_file_paths: list[str],
+    project_path: Path,
+    store: VectorStore,
+    kb_dir: Path,
+    client: GeminiClient,
+    embedder: GeminiEmbedder,
+    config: Config,
+) -> list[str]:
+    """Summarize, embed and upsert test files found in a diff.
+
+    Called during Phase 2 when the diff itself modifies or adds test files.
+    New/updated tests are added to the FAISS index and tests.jsonl so they
+    are available for immediate selection.
+
+    Returns the list of test_ids that were added or updated.
+    """
+    _ALT_TEST_ROOTS = ("tests", "src/test/java", "test/java", "test", "source")
+
+    def _resolve_test_file(diff_path: Path) -> Path | None:
+        full = project_path / diff_path if not diff_path.is_absolute() else diff_path
+        if full.exists():
+            return full
+        # Diff path prefix may differ from checkout layout (e.g. Chart: source/ → tests/)
+        parts = diff_path.parts
+        if len(parts) > 1:
+            remainder = Path(*parts[1:])
+            for prefix in _ALT_TEST_ROOTS:
+                candidate = project_path / prefix / remainder
+                if candidate.exists():
+                    return candidate
+        return None
+
+    paths = [Path(p) for p in test_file_paths]
+    resolved = []
+    for p in paths:
+        found = _resolve_test_file(p)
+        if found:
+            resolved.append(found)
+        else:
+            logger.warning("Test file from diff not found on disk: %s", project_path / p)
+
+    if not resolved:
+        return []
+
+    all_methods = parse_test_methods(resolved, project_path)
+    if not all_methods:
+        return []
+
+    for tm in all_methods:
+        tm.sensitivity_score = compute_sensitivity(tm.source)
+
+    updated_ids: list[str] = []
+    for tm in all_methods:
+        try:
+            summary, concepts, llm_tier, tested_methods, condition, topology_scope = summarize_test(
+                tm, client, project_path
+            )
+            tm.summary = summary
+            tm.concepts = concepts
+            tm.tested_methods = tested_methods
+            tm.condition = condition
+            tm.topology_scope = topology_scope
+            rule_result = classify_tier_rule(tm, config.kb.tier_keywords)
+            if rule_result is not None:
+                tm.tier, tm.tier_source = rule_result
+            else:
+                tm.tier = llm_tier
+                tm.tier_source = "llm"
+        except Exception as exc:
+            logger.warning("Failed to enrich test %s: %s", tm.test_id, exc)
+            continue
+
+        text = format_for_embedding(tm)
+        vecs = embedder.embed_batch_efficient([text])
+        if not vecs:
+            continue
+        tm.embedding = vecs[0]
+
+        store.upsert(tm.embedding, tm.test_id, tm.tier, _tm_to_dict(tm))
+        updated_ids.append(tm.test_id)
+        logger.info("KB upsert: %s (tier=%d)", tm.test_id, tm.tier)
+
+    if updated_ids:
+        # Rewrite tests.jsonl with updated entries
+        existing = _load_existing(kb_dir / "tests.jsonl")
+        for tm in all_methods:
+            if tm.test_id in updated_ids:
+                existing[tm.test_id] = _tm_to_dict(tm)
+        with open(kb_dir / "tests.jsonl", "w", encoding="utf-8") as f:
+            for row in existing.values():
+                f.write(json.dumps(row) + "\n")
+        store.save(kb_dir)
+
+    return updated_ids
 
 
 def _tm_to_dict(tm: TestMethod) -> dict:

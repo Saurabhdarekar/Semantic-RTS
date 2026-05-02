@@ -1,0 +1,4 @@
+# Ablation: disable the negative reasoning pass.
+# Measures how much penalising clearly-unrelated Tier 4/5 tests improves precision.
+retrieval:
+  negative_pass_enabled: false

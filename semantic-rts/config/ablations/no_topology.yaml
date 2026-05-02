@@ -1,0 +1,4 @@
+# Ablation: disable topology-aware score multiplier.
+# Measures whether boosting integration/system tests for structural diffs improves recall.
+selector:
+  topology_multiplier: 1.0

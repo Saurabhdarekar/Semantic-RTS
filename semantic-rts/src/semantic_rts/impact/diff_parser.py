@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +12,12 @@ import javalang
 import unidiff
 
 logger = logging.getLogger(__name__)
+
+# Matches Java method declaration lines in unified diff output (added or removed)
+_SIG_CHANGE_RE = re.compile(
+    r'^[+-]\s*(public|protected|private|static)\s+\w[\w<>\[\]]*\s+\w+\s*\(',
+    re.MULTILINE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,14 +42,56 @@ class FileChange:
 class ParsedDiff:
     diff_hash: str
     file_changes: list[FileChange]
-    files_changed: list[str]            # convenience — just the paths
+    files_changed: list[str]            # source files only (non-test Java)
+    test_files_changed: list[str]       # test files touched by the diff
     methods_changed: list[str]          # populated by extract_changed_methods
     raw_diff: str
+    change_type: str = "general"        # micro_fix | api_change | refactoring | new_behavior | config_change | general
+
+
+# ---------------------------------------------------------------------------
+# Change type classifier
+# ---------------------------------------------------------------------------
+
+def classify_change_type(parsed: "ParsedDiff") -> str:
+    """Classify a parsed diff using rule-based heuristics. No LLM call."""
+    java_changes = [fc for fc in parsed.file_changes if fc.path.endswith(".java")]
+    if not java_changes:
+        return "config_change"
+
+    has_new_files = any(fc.is_new_file for fc in java_changes)
+    has_sig_change = bool(_SIG_CHANGE_RE.search(parsed.raw_diff))
+
+    raw_lines = parsed.raw_diff.splitlines()
+    added = sum(1 for l in raw_lines if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in raw_lines if l.startswith("-") and not l.startswith("---"))
+    total_delta = added + removed
+
+    if has_new_files:
+        return "new_behavior"
+    if has_sig_change:
+        return "api_change"
+    if total_delta <= 5:
+        return "micro_fix"
+    if total_delta > 30 and not has_sig_change:
+        return "refactoring"
+    return "general"
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _is_test_path(path: str) -> bool:
+    """Return True if this Java file is a test file."""
+    p = path.replace("\\", "/")
+    stem = Path(path).stem
+    return (
+        "/test/" in p or "/tests/" in p
+        or stem.endswith("Test") or stem.endswith("Tests")
+        or stem.startswith("Test")
+    )
+
 
 def _strip_prefix(path: str) -> str:
     """Strip git a/ or b/ path prefix."""
@@ -121,14 +170,18 @@ def parse_unified_diff(diff_text: str) -> ParsedDiff:
             is_deleted_file=pf.is_removed_file,
         ))
 
-    files_changed = [fc.path for fc in file_changes]
-    return ParsedDiff(
+    source_files = [fc.path for fc in file_changes if not _is_test_path(fc.path)]
+    test_files = [fc.path for fc in file_changes if _is_test_path(fc.path)]
+    result = ParsedDiff(
         diff_hash=diff_hash,
         file_changes=file_changes,
-        files_changed=files_changed,
+        files_changed=source_files,
+        test_files_changed=test_files,
         methods_changed=[],
         raw_diff=diff_text,
     )
+    result.change_type = classify_change_type(result)
+    return result
 
 
 def extract_changed_methods(

@@ -92,14 +92,16 @@ def build(ctx: click.Context, project: str, project_path: str, resume: bool, max
     help="Path to the checked-out project root (enables method signature extraction for intent).",
 )
 @click.option("--output", default=None, help="Write selected test IDs to this file (stdout if omitted).")
+@click.option("--commit-message", default=None, help="Commit message or PR description to improve intent analysis.")
 @click.pass_context
-def select(ctx: click.Context, diff: str, kb: str, project_path: Optional[str], output: Optional[str]) -> None:
+def select(ctx: click.Context, diff: str, kb: str, project_path: Optional[str], output: Optional[str], commit_message: Optional[str]) -> None:
     """Phase 2+3: Retrieve and rank tests for a given diff."""
     from pathlib import Path
 
     from semantic_rts.impact.diff_parser import extract_changed_methods, parse_unified_diff
     from semantic_rts.impact.intent_agent import analyze_intent
     from semantic_rts.impact.retriever import retrieve
+    from semantic_rts.kb.builder import update_kb_from_test_paths
     from semantic_rts.kb.vector_store import VectorStore
     from semantic_rts.llm.client import GeminiClient
     from semantic_rts.llm.embeddings import GeminiEmbedder
@@ -113,17 +115,60 @@ def select(ctx: click.Context, diff: str, kb: str, project_path: Optional[str], 
     store = VectorStore.load(kb_path)
     click.echo(f"[select] KB has {store.size} tests.")
 
+    # Load enrichment maps from tests.jsonl (enables Phase 4 features)
+    import json as _json
+    tested_methods_map: dict = {}
+    fixture_map: dict = {}
+    sensitivity_map: dict = {}
+    topology_map: dict = {}
+    kb_summaries: dict = {}
+    _jsonl = kb_path / "tests.jsonl"
+    if _jsonl.exists():
+        with open(_jsonl, encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _row = _json.loads(_line)
+                    _tid = _row["test_id"]
+                    tested_methods_map[_tid] = _row.get("tested_methods", [])
+                    fixture_map[_tid] = _row.get("fixture_classes", [])
+                    sensitivity_map[_tid] = float(_row.get("sensitivity_score", 0.5))
+                    topology_map[_tid] = _row.get("topology_scope", "unit")
+                    kb_summaries[_tid] = _row.get("summary", "")
+                except Exception:
+                    pass
+    store.build_bm25(tested_methods_map)
+
     click.echo("[select] Parsing diff ...")
     parsed = parse_unified_diff(diff_text)
     methods = extract_changed_methods(parsed, project_root=project_path)
-    click.echo(f"[select] Files changed: {parsed.files_changed}")
+    click.echo(f"[select] Source files changed: {parsed.files_changed}")
+    click.echo(f"[select] Test files changed: {parsed.test_files_changed}")
     click.echo(f"[select] Methods changed: {methods}")
+
+    # Upsert any test files touched by the diff into the KB
+    test_in_diff_ids: list[str] = []
+    if parsed.test_files_changed and project_path:
+        click.echo(f"[select] Updating KB with {len(parsed.test_files_changed)} test file(s) from diff ...")
+        embedder_for_update = GeminiEmbedder(cfg)
+        test_in_diff_ids = update_kb_from_test_paths(
+            parsed.test_files_changed, Path(project_path), store,
+            kb_path, GeminiClient(cfg), embedder_for_update, cfg,
+        )
+        click.echo(f"[select] KB updated: {len(test_in_diff_ids)} test(s) upserted")
 
     click.echo("[select] Analyzing intent ...")
     client = GeminiClient(cfg)
     embedder = GeminiEmbedder(cfg)
-    intent = analyze_intent(diff_text, parsed.files_changed, methods, client, cfg, project_root=project_path)
-    click.echo(f"[select] Intent: {intent.intent_summary[:120]}")
+    intent = analyze_intent(
+        diff_text, parsed.files_changed, methods, client, cfg,
+        project_root=project_path,
+        change_type=parsed.change_type,
+        commit_message=commit_message,
+    )
+    click.echo(f"[select] change_type={parsed.change_type}  Intent: {intent.intent_summary[:120]}")
 
     click.echo("[select] Retrieving candidates ...")
     candidates, trace = retrieve(
@@ -131,11 +176,25 @@ def select(ctx: click.Context, diff: str, kb: str, project_path: Optional[str], 
         diff_hash=parsed.diff_hash,
         files_changed=parsed.files_changed,
         methods_changed=methods,
+        tested_methods_map=tested_methods_map,
+        client=client,
+        kb_summaries=kb_summaries,
     )
     click.echo(f"[select] {len(candidates)} candidates retrieved.")
 
     click.echo("[select] Applying Safety Bridge + Precision Filter ...")
-    selection = run_select(candidates, store.all_tests(), cfg)
+    selection = run_select(
+        candidates, store.all_tests(), cfg,
+        fixture_map=fixture_map,
+        sensitivity_map=sensitivity_map,
+        topology_map=topology_map,
+        change_type=parsed.change_type,
+        files_changed=parsed.files_changed,
+        similarity_threshold=trace.effective_threshold if trace.low_confidence_retrieval else None,
+        test_in_diff_ids=test_in_diff_ids,
+        methods_changed=methods,
+        tested_methods_map=tested_methods_map,
+    )
 
     selected_ids = [t.test_id for t in selection.selected]
     click.echo(f"[select] Selected {len(selected_ids)} tests.")

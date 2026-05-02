@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -21,6 +22,14 @@ _JUNIT4_TEST_ANNOTATIONS = {"Test"}
 _JUNIT5_TEST_ANNOTATIONS = {"Test", "ParameterizedTest", "RepeatedTest"}
 # Skip-marker annotations
 _SKIP_ANNOTATIONS = {"Disabled", "Ignore"}
+
+# Setup/teardown annotation names (JUnit 4 + 5)
+_SETUP_ANNOTATIONS = {
+    "Before", "BeforeClass", "After", "AfterClass",
+    "BeforeEach", "AfterEach", "BeforeAll", "AfterAll",
+    "Rule", "ClassRule",
+}
+_NEW_INSTANCE_RE = re.compile(r'\bnew\s+([A-Z][a-zA-Z0-9_]*)\s*\(')
 
 
 @dataclass
@@ -43,6 +52,9 @@ class TestMethod:
     tier: int = 3
     tier_source: Literal["rule", "llm", "default"] = "rule"
     embedding: list[float] = field(default_factory=list)
+    fixture_classes: list[str] = field(default_factory=list)   # classes instantiated in setup/teardown
+    sensitivity_score: float = 0.5                              # estimated regression-catch likelihood
+    topology_scope: str = "unit"                                # "unit" | "integration" | "system"
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +198,33 @@ def _parse_file(file_path: Path, project_root: Path) -> list[TestMethod]:
                 source_hash=source_hash,
             ))
 
+        # Attach fixture classes discovered from setup/teardown to all methods in this class
+        if methods:
+            class_methods = [m for m in methods if m.class_fqn == class_fqn]
+            if class_methods:
+                fixtures = _extract_fixture_classes(source_lines, type_decl)
+                for tm in class_methods:
+                    tm.fixture_classes = fixtures
+
     return methods
+
+
+def _extract_fixture_classes(source_lines: list[str], type_decl: javalang.tree.ClassDeclaration) -> list[str]:
+    """Return class simple names instantiated inside setup/teardown methods."""
+    fixture_classes: list[str] = []
+    for member in (type_decl.body or []):
+        if not isinstance(member, javalang.tree.MethodDeclaration):
+            continue
+        ann_names = {a.name for a in (member.annotations or [])}
+        if not (ann_names & _SETUP_ANNOTATIONS):
+            continue
+        start = (member.position.line - 1) if member.position else 0
+        source = _extract_method_source(source_lines, start)
+        for m in _NEW_INSTANCE_RE.finditer(source):
+            cls = m.group(1)
+            if cls not in fixture_classes:
+                fixture_classes.append(cls)
+    return fixture_classes
 
 
 def _earliest_line(method: javalang.tree.MethodDeclaration) -> int:

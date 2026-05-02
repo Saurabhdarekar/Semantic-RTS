@@ -24,6 +24,7 @@ class VectorStore:
         self._test_ids: list[str] = []
         self._tiers: list[int] = []
         self._rows: list[dict[str, Any]] = []  # full rows for inspection / export
+        self._bm25 = None  # built on demand via build_bm25()
 
     # ------------------------------------------------------------------
     # Build
@@ -42,6 +43,39 @@ class VectorStore:
         self._test_ids.extend(test_ids)
         self._tiers.extend(tiers if tiers is not None else [3] * len(test_ids))
         self._rows.extend(rows if rows is not None else [{} for _ in test_ids])
+
+    def upsert(
+        self,
+        vector: list[float],
+        test_id: str,
+        tier: int,
+        row: "dict[str, Any] | None" = None,
+    ) -> None:
+        """Add a new vector or replace an existing one with the same test_id.
+
+        IndexFlatIP has no native delete, so an update rebuilds the index
+        from the reconstructed vectors minus the old entry.
+        """
+        if test_id in self._test_ids:
+            idx = self._test_ids.index(test_id)
+            n = self._index.ntotal
+            all_vecs = np.zeros((n, self._dim), dtype=np.float32)
+            for i in range(n):
+                self._index.reconstruct(i, all_vecs[i])
+            keep = [i for i in range(n) if i != idx]
+            self._index = faiss.IndexFlatIP(self._dim)
+            if keep:
+                self._index.add(all_vecs[keep])
+            self._test_ids.pop(idx)
+            self._tiers.pop(idx)
+            if idx < len(self._rows):
+                self._rows.pop(idx)
+
+        mat = np.array([vector], dtype=np.float32)
+        self._index.add(mat)
+        self._test_ids.append(test_id)
+        self._tiers.append(tier)
+        self._rows.append(row or {})
 
     # ------------------------------------------------------------------
     # Search
@@ -90,6 +124,7 @@ class VectorStore:
         store._test_ids = meta["test_ids"]
         store._tiers = meta["tiers"]
         store._rows = meta.get("rows", [{} for _ in store._test_ids])
+        store._bm25 = None
         return store
 
     # ------------------------------------------------------------------
@@ -112,6 +147,41 @@ class VectorStore:
             return self._tiers[self._test_ids.index(test_id)]
         except ValueError:
             return 3
+
+    # ------------------------------------------------------------------
+    # BM25 hybrid index
+    # ------------------------------------------------------------------
+
+    def build_bm25(self, tested_methods_map: dict[str, list[str]]) -> None:
+        """Build BM25 index over test identity tokens.
+
+        Must be called explicitly after load() because tested_methods data
+        lives in tests.jsonl, not in index.meta.json.
+        """
+        import re as _re
+        from rank_bm25 import BM25Okapi
+
+        corpus = []
+        for test_id in self._test_ids:
+            tokens = _re.split(r'[.:_\s]+', test_id.lower())
+            for method in tested_methods_map.get(test_id, []):
+                tokens.extend(_re.split(r'[._\s]+', method.lower()))
+            corpus.append(tokens)
+
+        self._bm25 = BM25Okapi(corpus) if corpus else None
+
+    def bm25_scores(self, query_tokens: list[str]) -> dict[str, float]:
+        """Return {test_id: normalised_score} for all tests.
+
+        Scores are in [0.0, 1.0]. Returns empty dict if BM25 not built.
+        """
+        if self._bm25 is None or not self._test_ids:
+            return {}
+        raw = self._bm25.get_scores(query_tokens)
+        max_score = float(raw.max())
+        if max_score <= 0:
+            return {}
+        return dict(zip(self._test_ids, (raw / max_score).tolist()))
 
     @property
     def size(self) -> int:

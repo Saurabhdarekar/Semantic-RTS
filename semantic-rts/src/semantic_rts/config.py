@@ -64,6 +64,13 @@ class KBConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     top_k: int = 30
     similarity_threshold: float = 0.55
+    token_overlap_weight: float = 0.12
+    package_proximity_weight: float = 0.08
+    bm25_weight: float = 0.20
+    negative_pass_enabled: bool = True
+    negative_pass_penalty: float = 0.25
+    adaptive_threshold_enabled: bool = True
+    adaptive_threshold_min: float = 0.30
 
 
 class SafetyBridgeConfig(BaseModel):
@@ -80,11 +87,23 @@ class SelectorConfig(BaseModel):
     safety_bridge: SafetyBridgeConfig = Field(default_factory=SafetyBridgeConfig)
     precision_filter: PrecisionFilterConfig = Field(default_factory=PrecisionFilterConfig)
     max_selected: int = 100
+    topology_multiplier: float = 1.20
+    topology_trigger_change_types: list[str] = Field(
+        default_factory=lambda: ["api_change", "refactoring"]
+    )
+    topology_trigger_packages: list[str] = Field(
+        default_factory=lambda: ["util", "common", "base", "core", "shared", "helper"]
+    )
+    sensitivity_multiplier_enabled: bool = True
+    cross_encoder_enabled: bool = False
+    cross_encoder_top_n: int = 40
 
 
 class ImpactConfig(BaseModel):
     skip_intent_agent: bool = False
     diff_max_tokens: int = 8000
+    micro_diff_bypass_enabled: bool = True
+    micro_diff_max_lines: int = 5
 
 
 class PathsConfig(BaseModel):

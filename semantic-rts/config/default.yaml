@@ -3,8 +3,8 @@ llm:
   chat_model: gemini-3.1-flash-lite-preview
   embedding_model: gemini-embedding-001
   max_retries: 5
-  rate_limit_rpm: 14        # stay under 15 RPM free-tier limit for gemini-3.1-flash-lite
-  rate_limit_rpd: 1400      # stay under 1500 RPD
+  rate_limit_rpm: 2900      # paid tier: embedding limit 3K RPM, chat limit 4K RPM
+  rate_limit_rpd: 145000    # paid tier: chat model 150K RPD limit
 
 vector_store:
   type: faiss
@@ -21,18 +21,37 @@ kb:
     tier_4: [util, helper, format, parse, convert]
     tier_5: [getter, setter, tostring, equals, hashcode, constructor]
 
+impact:
+  skip_intent_agent: false
+  diff_max_tokens: 8000
+  micro_diff_bypass_enabled: true
+  micro_diff_max_lines: 5
+
 retrieval:
-  top_k: 30
-  similarity_threshold: 0.55
+  top_k: 20
+  similarity_threshold: 0.60
+  token_overlap_weight: 0.12
+  package_proximity_weight: 0.08
+  bm25_weight: 0.20
+  negative_pass_enabled: true
+  negative_pass_penalty: 0.25
+  adaptive_threshold_enabled: true
+  adaptive_threshold_min: 0.30
 
 selector:
   safety_bridge:
     always_include_tier_1: true
     tier_2_threshold: 0.40
   precision_filter:
-    tier_5_min: 0.65
-    tier_4_min: 0.50
-  max_selected: 100
+    tier_5_min: 0.70
+    tier_4_min: 0.62
+  max_selected: 40
+  topology_multiplier: 1.20
+  topology_trigger_change_types: [api_change, refactoring]
+  topology_trigger_packages: [util, common, base, core, shared, helper]
+  sensitivity_multiplier_enabled: true
+  cross_encoder_enabled: false
+  cross_encoder_top_n: 40
 
 paths:
   defects4j_home: ${DEFECTS4J_HOME}

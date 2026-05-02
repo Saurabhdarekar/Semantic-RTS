@@ -1,0 +1,5 @@
+# Ablation: disable CamelCase token overlap and package proximity boosts.
+# Measures the combined contribution of name-based structural signals.
+retrieval:
+  token_overlap_weight: 0.0
+  package_proximity_weight: 0.0

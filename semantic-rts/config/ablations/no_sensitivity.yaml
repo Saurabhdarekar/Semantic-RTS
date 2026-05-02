@@ -1,0 +1,4 @@
+# Ablation: disable the sensitivity score multiplier.
+# Measures whether static regression-catch likelihood scoring affects selection quality.
+selector:
+  sensitivity_multiplier_enabled: false

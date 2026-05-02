@@ -90,10 +90,13 @@ def _single_intent_call(
     client: "GeminiClient",
     max_diff_chars: int,
     method_sigs: list[str] | None = None,
+    commit_message: str | None = None,
 ) -> IntentResult | None:
     diff_snippet = diff_text[:max_diff_chars]
     if len(diff_text) > max_diff_chars:
         diff_snippet += "\n... [diff truncated]"
+
+    commit_block = f"Commit message: {commit_message}\n\n" if commit_message else ""
 
     sig_block = ""
     if method_sigs:
@@ -102,6 +105,7 @@ def _single_intent_call(
     prompt = INTENT_V1_TEMPLATE.format(
         file_list=", ".join(files_changed) or "(none)",
         method_list=", ".join(methods_changed) or "(none)",
+        commit_block=commit_block,
         sig_block=sig_block,
         diff=diff_snippet,
     )
@@ -114,6 +118,7 @@ def _chunked_intent_call(
     methods_changed: list[str],
     client: "GeminiClient",
     max_diff_chars: int,
+    commit_message: str | None = None,
 ) -> IntentResult | None:
     """Split diff by file, call intent per file, then merge."""
     import unidiff
@@ -121,14 +126,14 @@ def _chunked_intent_call(
     try:
         patch = unidiff.PatchSet(diff_text)
     except Exception:
-        return _single_intent_call(diff_text, files_changed, methods_changed, client, max_diff_chars)
+        return _single_intent_call(diff_text, files_changed, methods_changed, client, max_diff_chars, commit_message=commit_message)
 
     partial_intents: list[str] = []
 
     for pf in patch:
         file_diff = str(pf)
         file_methods = [m for m in methods_changed if pf.path in m or pf.path.split("/")[-1] in m]
-        partial = _single_intent_call(file_diff, [pf.path], file_methods, client, max_diff_chars)
+        partial = _single_intent_call(file_diff, [pf.path], file_methods, client, max_diff_chars, commit_message=commit_message)
         if partial:
             partial_intents.append(
                 f"File: {pf.path}\n"
@@ -156,6 +161,8 @@ def analyze_intent(
     client: "GeminiClient",
     config: "Config",
     project_root: "str | None" = None,
+    change_type: str = "general",
+    commit_message: str | None = None,
 ) -> IntentResult:
     """Infer developer intent from a diff via LLM.
 
@@ -164,6 +171,24 @@ def analyze_intent(
     Falls back to a rule-based summary on any LLM failure.
     """
     import unidiff
+    from pathlib import Path as _Path
+
+    # --- Micro-diff bypass: skip LLM for tiny changes ---
+    if config.impact.micro_diff_bypass_enabled and change_type == "micro_fix":
+        method_names = [m.split(".")[-1] for m in methods_changed if "." in m]
+        file_stems = [_Path(f).stem for f in files_changed]
+        summary = f"Small logic change in {', '.join(file_stems) or 'unknown file'}."
+        if method_names:
+            summary += f" Affected methods: {', '.join(method_names)}."
+        if commit_message:
+            first_line = commit_message.splitlines()[0][:120]
+            summary += f" Commit: {first_line}."
+        return IntentResult(
+            intent_summary=summary,
+            concepts=method_names[:10],
+            risk_areas=["other"],
+            intent_failed=False,
+        )
 
     # Strip test file hunks from diff — focus LLM on production code changes
     prod_files = [f for f in files_changed if not _is_test_file(f)]
@@ -182,13 +207,12 @@ def analyze_intent(
     method_sigs: list[str] = []
     if project_root:
         try:
-            from pathlib import Path
             from semantic_rts.kb.sut_linker import _extract_method_signatures
-            method_names = {m.split(".")[-1] for m in methods_changed if "." in m}
+            method_names_set = {m.split(".")[-1] for m in methods_changed if "." in m}
             for f in prod_files:
-                prod_path = Path(project_root) / f
+                prod_path = _Path(project_root) / f
                 if prod_path.exists():
-                    sigs = _extract_method_signatures(prod_path, method_names, cap=6)
+                    sigs = _extract_method_signatures(prod_path, method_names_set, cap=6)
                     method_sigs.extend(sigs)
                     if len(method_sigs) >= 12:
                         break
@@ -196,9 +220,13 @@ def analyze_intent(
             pass
 
     if len(prod_diff) <= max_chars:
-        result = _single_intent_call(prod_diff, prod_files, methods_changed, client, max_chars, method_sigs)
+        result = _single_intent_call(
+            prod_diff, prod_files, methods_changed, client, max_chars, method_sigs, commit_message
+        )
     else:
-        result = _chunked_intent_call(prod_diff, prod_files, methods_changed, client, max_chars)
+        result = _chunked_intent_call(
+            prod_diff, prod_files, methods_changed, client, max_chars, commit_message
+        )
 
     if result is not None:
         return result

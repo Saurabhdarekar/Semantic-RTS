@@ -53,6 +53,31 @@ Output JSON only:
   "tier": <integer 1-5: 1=security/auth/payment/crypto, 2=persistence/transactions/concurrency, 3=business-logic/services/API, 4=utilities/formatting/parsing, 5=trivial getters/setters/toString>
 }}"""
 
+# V3: adds topology_scope field; keep V2 intact so its cached responses remain valid
+SUMMARIZER_V3 = "SUMMARIZER_V3"
+
+SUMMARIZER_V3_TEMPLATE = """\
+You are analyzing a unit test to produce a rich semantic description for a test selection system.
+Your output will be embedded in a vector database to match code changes to relevant tests — be precise and specific.
+
+Test class: {class_fqn}
+Test method: {method_name}
+{sut_context}
+Test source:
+```java
+{source}
+```
+
+Output JSON only:
+{{
+  "summary": "<one sentence: what specific production behavior does this test verify>",
+  "condition": "<the exact scenario or condition under test, e.g. 'null input', 'empty list', 'concurrent modification', 'boundary value'>",
+  "tested_methods": ["<ClassName.methodName for each production method this test directly exercises>"],
+  "concepts": ["<3-7 domain keywords relevant to this test>"],
+  "tier": <integer 1-5: 1=security/auth/payment/crypto, 2=persistence/transactions/concurrency, 3=business-logic/services/API, 4=utilities/formatting/parsing, 5=trivial getters/setters/toString>,
+  "topology_scope": "<unit|integration|system: unit=tests one class in isolation using mocks or minimal deps, integration=tests real interaction between 2+ classes with real dependencies, system=tests end-to-end flow spanning multiple subsystems>"
+}}"""
+
 # ---------------------------------------------------------------------------
 # Phase 1 — Tier Classifier
 # ---------------------------------------------------------------------------
@@ -84,7 +109,7 @@ You are analyzing a Git diff to infer the developer's intent for test selection 
 
 Files changed: {file_list}
 Changed methods: {method_list}
-
+{commit_block}\
 {sig_block}Diff:
 ```diff
 {diff}

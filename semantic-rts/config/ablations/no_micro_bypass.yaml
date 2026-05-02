@@ -1,0 +1,4 @@
+# Ablation: disable micro-diff bypass — small diffs go through the full LLM intent path.
+# Measures quality delta between LLM summaries and the rule-based bypass for tiny changes.
+impact:
+  micro_diff_bypass_enabled: false

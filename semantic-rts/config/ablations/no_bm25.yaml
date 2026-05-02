@@ -1,0 +1,4 @@
+# Ablation: disable BM25 hybrid scoring.
+# Measures contribution of exact-keyword matching on top of FAISS cosine similarity.
+retrieval:
+  bm25_weight: 0.0

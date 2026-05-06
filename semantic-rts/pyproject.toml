@@ -24,6 +24,7 @@ dependencies = [
     "scipy>=1.13",
     "pandas>=2.2",
     "matplotlib>=3.8",
+    "rank-bm25>=0.2",
 ]
 
 [project.scripts]

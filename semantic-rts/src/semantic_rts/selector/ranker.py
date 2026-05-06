@@ -206,14 +206,17 @@ def select(
     # scored: test_id → (score, reason, tier)
     scored: dict[str, tuple[float, str, int]] = {}
 
+    semantic_only = ablation_flags.semantic_only
+
     # --- 0: Tests touched by the diff itself — always run ---
     tier_lookup = {tid: t for tid, t in all_kb_tests}
-    for test_id in (test_in_diff_ids or []):
-        tier = tier_lookup.get(test_id, 3)
-        scored[test_id] = (1.0, "test_in_diff", tier)
+    if not semantic_only:
+        for test_id in (test_in_diff_ids or []):
+            tier = tier_lookup.get(test_id, 3)
+            scored[test_id] = (1.0, "test_in_diff", tier)
 
     # --- 1+2: Safety Bridge ---
-    if ablation_flags.safety_bridge_enabled:
+    if ablation_flags.safety_bridge_enabled and not semantic_only:
         for test_id, tier in all_kb_tests:
             if _effective_tier(tier, ablation_flags) == 1:
                 scored[test_id] = (1.0, "safety_bridge_t1", tier)
@@ -225,7 +228,7 @@ def select(
                     scored[c.test_id] = (c.score, "safety_bridge_t2", c.tier)
 
     # --- 3: Fixture bypass ---
-    if fixture_map and files_changed:
+    if fixture_map and files_changed and not semantic_only:
         changed_class_simples = {Path(f).stem for f in files_changed}
         for test_id, tier in all_kb_tests:
             if test_id in scored:
@@ -234,19 +237,19 @@ def select(
                 scored[test_id] = (0.75, "fixture_bypass", tier)
 
     # --- 3.5: Naming convention bypass — FooTest always runs when Foo.java changes ---
-    if files_changed:
+    if files_changed and not semantic_only:
         for test_id, tier in _naming_convention_matches(all_kb_tests, files_changed):
             if test_id not in scored:
                 scored[test_id] = (0.95, "naming_convention", tier)
 
     # --- 3.6: Method coverage bypass — test's LLM-extracted methods overlap changed methods ---
-    if methods_changed and tested_methods_map:
+    if methods_changed and tested_methods_map and not semantic_only:
         for test_id, tier in _method_coverage_matches(all_kb_tests, methods_changed, tested_methods_map):
             if test_id not in scored:
                 scored[test_id] = (0.92, "method_coverage", tier)
 
     # --- 3.7: Test method name match — testParseX matches when parse() changes ---
-    if methods_changed:
+    if methods_changed and not semantic_only:
         for test_id, tier in _test_method_name_matches(all_kb_tests, methods_changed):
             if test_id not in scored:
                 scored[test_id] = (0.88, "test_method_match", tier)

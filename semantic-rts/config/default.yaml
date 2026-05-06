@@ -1,6 +1,6 @@
 llm:
   provider: gemini
-  chat_model: gemini-3.1-flash-lite-preview
+  chat_model: gemini-2.5-flash
   embedding_model: gemini-embedding-001
   max_retries: 5
   rate_limit_rpm: 2900      # paid tier: embedding limit 3K RPM, chat limit 4K RPM

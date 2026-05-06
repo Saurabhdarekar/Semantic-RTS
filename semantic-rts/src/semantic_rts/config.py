@@ -125,6 +125,7 @@ class AblationFlags(BaseModel):
     safety_bridge_enabled: bool = True
     precision_filter_enabled: bool = True
     tiers_enabled: bool = True
+    semantic_only: bool = False  # disable all deterministic bypasses; pure semantic search
 
 
 # ---------------------------------------------------------------------------

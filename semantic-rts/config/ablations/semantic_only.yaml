@@ -1,0 +1,6 @@
+# Ablation: pure semantic search only.
+# Disables all deterministic bypasses (naming_convention, method_coverage,
+# test_method_match, test_in_diff, fixture_bypass, safety_bridge).
+# Shows the baseline contribution of LLM intent + FAISS embedding alone.
+_ablation:
+  semantic_only: true
